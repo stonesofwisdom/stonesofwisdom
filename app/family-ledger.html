@@ -325,7 +325,9 @@ async function ensureMonth(ym) {
 }
 async function saveSettings(patch) {
   const next = { ...(settings || DEFAULT_SETTINGS), ...patch };
-  return write(() => db.doc("settings/main").set({ categories: next.categories, incomeSources: next.incomeSources, recurring: next.recurring || [] }));
+  const ok = await write(() => db.doc("settings/main").set({ categories: next.categories, incomeSources: next.incomeSources, recurring: next.recurring || [] }));
+  if (ok) { settings = next; settingsExists = true; }
+  return ok;
 }
 
 // ---------- rendering ----------
@@ -657,11 +659,12 @@ document.addEventListener("keydown", e => { if (e.key === "Escape" && $("#sheetB
 
 function txSheet(existing) {
   let kind = existing?.kind || "expense";
-  const s = settings || DEFAULT_SETTINGS;
+  let sel = existing?.cat;
   const defDate = existing?.date || (viewYM === ymOf(today()) ? today() : viewYM + "-01");
-  const catOptions = () => kind === "expense"
-    ? groups().map(g => `<optgroup label="${esc(g)}">${cats().filter(c => (c.group || "Other") === g).map(c => `<option value="${esc(c.id)}" ${existing?.cat === c.id ? "selected" : ""}>${esc(c.name)}</option>`).join("")}</optgroup>`).join("")
-    : s.incomeSources.map(n => `<option ${existing?.cat === n ? "selected" : ""}>${esc(n)}</option>`).join("");
+  const catOptions = () => (kind === "expense"
+    ? groups().map(g => `<optgroup label="${esc(g)}">${cats().filter(c => (c.group || "Other") === g).map(c => `<option value="${esc(c.id)}" ${sel === c.id ? "selected" : ""}>${esc(c.name)}</option>`).join("")}</optgroup>`).join("")
+    : (settings || DEFAULT_SETTINGS).incomeSources.map(n => `<option ${sel === n ? "selected" : ""}>${esc(n)}</option>`).join(""))
+    + (writable ? `<option value="__new__">${kind === "expense" ? "+ New category…" : "+ New income source…"}</option>` : "");
   openSheet(`
     <h2>${existing ? "Edit entry" : "Record money"}</h2>
     <div class="seg" role="group" aria-label="Type"><button type="button" data-k="expense" aria-pressed="${kind === "expense"}">Expense</button><button type="button" data-k="income" aria-pressed="${kind === "income"}">Income</button></div>
@@ -670,6 +673,11 @@ function txSheet(existing) {
       <div class="row">
         <div class="field"><label for="txCat" id="txCatLabel">${kind === "expense" ? "Category" : "Source"}</label><select id="txCat">${catOptions()}</select></div>
         <div class="field"><label for="txDate">Date</label><input id="txDate" type="date" value="${defDate}" required></div>
+      </div>
+      <div id="newCatBox" class="panel" style="padding:12px;display:grid;gap:10px;background:var(--sunk)" hidden>
+        <div class="field"><label for="ncName" id="ncLabel">New category name</label><input id="ncName" autocomplete="off" placeholder="e.g. Domestic staff"></div>
+        <div class="field" id="ncGroupField"><label for="ncGroup">Group</label><select id="ncGroup">${groups().map(g => `<option>${esc(g)}</option>`).join("")}<option value="__newgroup__">+ New group…</option></select><input id="ncGroupNew" placeholder="New group name" hidden></div>
+        <div class="foot"><button type="button" class="btn small" id="ncCancel">Cancel</button><button type="button" class="btn small primary" id="ncAdd">Add and use it</button></div>
       </div>
       <div class="field"><label for="txNote">Note (optional)</label><input id="txNote" placeholder="e.g. Shoprite run, PHCN token" value="${esc(existing?.note || "")}"></div>
       <p class="err" id="txErr" hidden></p>
@@ -682,8 +690,40 @@ function txSheet(existing) {
     </form>`, sheet => {
     sheet.querySelectorAll(".seg button").forEach(b => b.addEventListener("click", () => {
       kind = b.dataset.k; sheet.querySelectorAll(".seg button").forEach(x => x.setAttribute("aria-pressed", String(x === b)));
+      sel = undefined; $("#newCatBox").hidden = true;
       $("#txCat").innerHTML = catOptions(); $("#txCatLabel").textContent = kind === "expense" ? "Category" : "Source";
     }));
+    // Adding a category or income source without leaving the form
+    const box = $("#newCatBox");
+    const closeNew = () => { box.hidden = true; $("#txCat").innerHTML = catOptions(); };
+    $("#txCat").addEventListener("change", e => {
+      if (e.target.value !== "__new__") { sel = e.target.value; return; }
+      box.hidden = false; $("#ncName").value = "";
+      $("#ncLabel").textContent = kind === "expense" ? "New category name" : "New income source";
+      $("#ncName").placeholder = kind === "expense" ? "e.g. Domestic staff" : "e.g. Rental income";
+      $("#ncGroupField").hidden = kind !== "expense";
+      $("#ncName").focus();
+    });
+    $("#ncGroup").addEventListener("change", e => { $("#ncGroupNew").hidden = e.target.value !== "__newgroup__"; if (!$("#ncGroupNew").hidden) $("#ncGroupNew").focus(); });
+    $("#ncCancel").onclick = closeNew;
+    $("#ncName").addEventListener("keydown", e => { if (e.key === "Enter") { e.preventDefault(); $("#ncAdd").click(); } });
+    $("#ncAdd").onclick = async () => {
+      const name = $("#ncName").value.trim(); const err = $("#txErr");
+      if (!name) { err.textContent = "Type a name for the new " + (kind === "expense" ? "category." : "income source."); err.hidden = false; $("#ncName").focus(); return; }
+      err.hidden = true;
+      if (kind === "expense") {
+        const dup = cats().find(c => c.name.toLowerCase() === name.toLowerCase());
+        if (dup) { sel = dup.id; closeNew(); return; }
+        const group = $("#ncGroup").value === "__newgroup__" ? ($("#ncGroupNew").value.trim() || "Other") : $("#ncGroup").value;
+        const id = name.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "").slice(0, 30) + "-" + uid().slice(0, 4);
+        if (await saveSettings({ categories: [...cats(), { id, name, group }] })) { sel = id; toast(`Added "${name}"`); closeNew(); }
+      } else {
+        const srcs = (settings || DEFAULT_SETTINGS).incomeSources;
+        const dup = srcs.find(n => n.toLowerCase() === name.toLowerCase());
+        if (dup) { sel = dup; closeNew(); return; }
+        if (await saveSettings({ incomeSources: [...srcs, name] })) { sel = name; toast(`Added "${name}"`); closeNew(); }
+      }
+    };
     $("#txAmt").focus();
     $("#txCancel").onclick = closeSheet;
     const submit = async more => {
@@ -691,6 +731,7 @@ function txSheet(existing) {
       const err = $("#txErr");
       if (!(amount > 0)) { err.textContent = "Enter an amount above zero, like 15000."; err.hidden = false; return; }
       if (!date) { err.textContent = "Choose a date."; err.hidden = false; return; }
+      if ($("#txCat").value === "__new__") { err.textContent = "Finish adding the new " + (kind === "expense" ? "category" : "income source") + ", or pick one from the list."; err.hidden = false; return; }
       const ym = ymOf(date);
       const body = { kind, amount, cat: $("#txCat").value, date, note: $("#txNote").value.trim(), by: existing?.by || myId || null, at: existing?.at || new Date().toISOString() };
       const id = existing?.id || uid();

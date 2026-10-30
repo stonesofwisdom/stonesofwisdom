@@ -12,6 +12,7 @@ claude.ai, not in this repository, so it is kept when the page is updated.
 
 - **This month**: money in, money out, budget left and amount kept, each compared with last month.
   A budget table per category shows spent, remaining and last month's figure.
+- **Add categories on the go**: pick "+ New category…" (or "+ New income source…") while recording an entry.
 - **Recurring items**: list fixed bills and salaries once; each month, one tap adds them.
 - **Budget help**: copy last month's budget, or fill empty budgets from the last three months' average.
 - **Next month at a glance**: likely spending and income, from recurring items plus recent averages.
